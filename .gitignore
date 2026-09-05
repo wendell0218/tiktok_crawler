@@ -1,0 +1,12 @@
+.DS_Store
+.pytest_cache/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+data/browser_profile/
+data/*.db
+data/*.db-*
+data/*.jsonl
+downloads/
+*.part

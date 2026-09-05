@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dycrawler"
+version = "0.1.0"
+description = "Douyin metadata collector and media downloader"
+requires-python = ">=3.11"
+dependencies = [
+    "httpx>=0.28,<1",
+    "playwright>=1.55,<2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<9"]
+
+[project.scripts]
+dycrawler = "dycrawler.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

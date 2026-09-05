@@ -1,0 +1,14 @@
+cd "/Users/wendell/Desktop/tiktok_crawler"
+source "/Users/wendell/miniconda3/etc/profile.d/conda.sh"
+conda activate douyin-crawler
+
+PYTHONPATH="/Users/wendell/Desktop/tiktok_crawler/src"
+export PYTHONPATH
+
+python -m dycrawler search "人工智能" \
+  --database "/Users/wendell/Desktop/tiktok_crawler/data/douyin.db" \
+  --profile "/Users/wendell/Desktop/tiktok_crawler/data/browser_profile" \
+  --max-items 100 \
+  --max-pages 20 \
+  --scroll-delay 2 \
+  --export "/Users/wendell/Desktop/tiktok_crawler/data/metadata.jsonl"
