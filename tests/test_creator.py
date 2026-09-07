@@ -22,6 +22,28 @@ def aweme(aweme_id, **fields):
     }
 
 
+def co_created_aweme(**fields):
+    return aweme("7619622418637720878", **{
+        "author": {
+            "uid": "21617530639355",
+            "sec_uid": "MS4wLjABAAAAssihLDGWRZQW6LPBR9aTi5UTO-vgXikwTObIvrMCz_Q",
+            "nickname": "亿点点不一样",
+        },
+        "cooperation_info": {"co_creators": [
+            {
+                "uid": "98357128966",
+                "sec_uid": "MS4wLjABAAAAnqAgClWafGXObJRi5PEV01XuV4m66GZ4GC2MvaaHXYU",
+                "nickname": "F1世界锦标赛", "role_title": "出镜", "invite_status": 1,
+            },
+            {
+                "uid": "105525949232", "sec_uid": USER["sec_uid"],
+                "nickname": "影视飓风", "role_title": "出镜", "invite_status": 1,
+            },
+        ]},
+        **fields,
+    })
+
+
 def payload(items, cursor=0, more=0):
     return {"status_code": 0, "aweme_list": items, "max_cursor": cursor, "has_more": more}
 
@@ -303,6 +325,110 @@ def test_wrong_or_malformed_author_stops_before_download(environment, author):
     assert error.value.category == "user_mismatch"
     callback.assert_not_awaited()
     assert not context.listeners and context.gate is None
+
+
+@pytest.mark.parametrize("status", [1, "1"])
+def test_known_fifth_page_co_created_video_is_accepted_without_rewriting_author(environment, monkeypatch, status):
+    target = "MS4wLjABAAAAaCcBHb3Rhc4zxF8YkBOfHfLh6k-IWEK2l3Ne9xOXPnQ"
+    monkeypatch.setitem(USER, "sec_uid", target)
+    monkeypatch.setitem(USER, "url", f"https://www.douyin.com/user/{target}")
+    collaboration = co_created_aweme()
+    collaboration["cooperation_info"]["co_creators"][1]["invite_status"] = status
+    responses = [payload([aweme(index * 2), aweme(index * 2 + 1)], 500 - index, 1) for index in range(4)]
+    fifth = [aweme(100 + index) for index in range(13)] + [collaboration, aweme(114)]
+    responses.append(payload(fifth, 400, 0))
+    context, session = environment(responses)
+    callback = AsyncMock()
+    records, pages = asyncio.run(creator.user_posts(USER, session, count=0, page_delay=0, on_page=callback))
+    assert len(records) == 23 and len(pages) == 5
+    assert pages[4]["received"] == pages[4]["added"] == 15
+    record = callback.await_args_list[4].args[0][13]
+    assert record["aweme_id"] == "7619622418637720878"
+    assert record["author"] == collaboration["author"]
+    assert record["source_user"] == target
+    assert [member["nickname"] for member in record["co_creators"]] == ["F1世界锦标赛", "影视飓风"]
+    assert record["co_creators"][1]["sec_uid"] == target
+    assert record["co_creators"][1]["invite_status"] == 1
+    assert type(record["co_creators"][1]["invite_status"]) is int
+    assert all(row["source_user"] == target for row in records)
+    assert context.continued == 5 and creator._scroll_search.await_count == 4
+    assert not context.listeners and not context.page_listeners and context.gate is None
+
+
+@pytest.mark.parametrize("info", [
+    None, {}, [], "invalid", False, 1,
+    {"co_creators": None}, {"co_creators": {}}, {"co_creators": "invalid"},
+    {"co_creators": [None, [], "invalid", 1, True, {}]},
+    {"co_creators": [{"sec_uid": "MS4wLjOther", "invite_status": 1}]},
+    {"co_creators": [{"sec_uid": "MS4wLjOther", "nickname": "影视飓风", "invite_status": 1}]},
+    {"co_creators": [{"sec_uid": USER["sec_uid"]}]},
+    {"co_creators": [{"nickname": "影视飓风", "invite_status": 1}]},
+])
+def test_unrelated_or_malformed_cooperation_still_stops_before_download(environment, info):
+    context, session = environment([payload([co_created_aweme(cooperation_info=info)])])
+    callback = AsyncMock()
+    with pytest.raises(BrowserRisk) as error:
+        asyncio.run(creator.user_posts(USER, session, page_delay=0, on_page=callback))
+    assert error.value.category == "user_mismatch"
+    callback.assert_not_awaited()
+    creator._scroll_search.assert_not_awaited()
+    assert not context.listeners and not context.page_listeners and context.gate is None
+
+
+@pytest.mark.parametrize("status", [None, True, False, 0, 2, -1, 1.0, 1.5, "0", "2", "01", "1.0", " 1 ", "", [], {}])
+def test_unaccepted_co_creator_cannot_establish_ownership(environment, status):
+    collaboration = co_created_aweme()
+    collaboration["cooperation_info"]["co_creators"][1]["invite_status"] = status
+    context, session = environment([payload([collaboration])])
+    callback = AsyncMock()
+    with pytest.raises(BrowserRisk) as error:
+        asyncio.run(creator.user_posts(USER, session, page_delay=0, on_page=callback))
+    assert error.value.category == "user_mismatch"
+    callback.assert_not_awaited()
+    assert not context.listeners and context.gate is None
+
+
+def test_primary_author_remains_valid_with_malformed_cooperation(environment):
+    _, session = environment([payload([aweme(1, cooperation_info="invalid")])])
+    records, _ = asyncio.run(creator.user_posts(USER, session, page_delay=0))
+    assert records[0]["author"]["sec_uid"] == records[0]["source_user"] == USER["sec_uid"]
+    assert records[0]["co_creators"] == []
+
+
+def test_co_created_videos_obey_count_deduplication_and_page_download_barrier(environment):
+    async def run():
+        collaboration = co_created_aweme()
+        context, session = environment([
+            payload([collaboration, collaboration, aweme(1, aweme_type=68), aweme(2, video={})], 300, 1),
+            payload([collaboration, aweme(3), aweme(4), aweme(5)], 200, 1),
+            payload([aweme(6)], 100, 0),
+        ])
+        entered, release = asyncio.Event(), asyncio.Event()
+        completed = []
+
+        async def callback(batch, page):
+            assert all(row["source_user"] == USER["sec_uid"] for row in batch)
+            if page["page"] == 1:
+                assert [row["aweme_id"] for row in batch] == ["7619622418637720878"]
+                entered.set()
+                await release.wait()
+            completed.append(page["page"])
+
+        task = asyncio.create_task(creator.user_posts(USER, session, count=3, page_delay=0, on_page=callback))
+        await entered.wait()
+        assert context.continued == 1 and completed == []
+        creator._scroll_search.assert_not_awaited()
+        release.set()
+        records, pages = await task
+        assert [row["aweme_id"] for row in records] == ["7619622418637720878", "3", "4"]
+        assert [page["added"] for page in pages] == [1, 2]
+        assert [entry["reason"] for entry in pages[0]["skipped"]] == ["image_post", "no_video_url"]
+        assert records[0]["author"] == collaboration["author"]
+        assert completed == [1, 2] and context.continued == 2
+        assert creator._scroll_search.await_count == 1 and len(context.responses) == 1
+        assert not context.listeners and context.gate is None
+
+    asyncio.run(asyncio.wait_for(run(), 3))
 
 
 def test_same_cursor_reports_incomplete_instead_of_success(environment):

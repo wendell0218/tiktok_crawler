@@ -1,6 +1,6 @@
 import pytest
 
-from dycrawler.normalize import PayloadError, extract_awemes, normalize_aweme, select_variant
+from dycrawler.normalize import PayloadError, extract_awemes, extract_co_creators, normalize_aweme, select_variant
 
 
 def sample_aweme():
@@ -123,3 +123,96 @@ def test_series_is_not_reported_as_collection():
     assert normalize_aweme(aweme)["collection"] is None
     aweme["series_info"] = {"series_id": "123", "series_name": "A paid series"}
     assert normalize_aweme(aweme)["collection"] is None
+
+
+@pytest.mark.parametrize("status", [1, "1"])
+def test_accepted_co_creators_preserve_primary_author_and_public_fields(status):
+    aweme = sample_aweme()
+    aweme["aweme_id"] = "7619622418637720878"
+    aweme["author"] = {
+        "uid": "21617530639355",
+        "sec_uid": "MS4wLjABAAAAssihLDGWRZQW6LPBR9aTi5UTO-vgXikwTObIvrMCz_Q",
+        "nickname": "亿点点不一样",
+    }
+    member = {
+        "uid": "105525949232",
+        "sec_uid": "MS4wLjABAAAAaCcBHb3Rhc4zxF8YkBOfHfLh6k-IWEK2l3Ne9xOXPnQ",
+        "nickname": "影视飓风",
+        "role_title": "出镜",
+        "invite_status": status,
+        "avatar_thumb": {"url_list": ["https://example.com/avatar"]},
+        "follower_count": 15968092,
+        "extra": "not exported",
+    }
+    aweme["cooperation_info"] = {"co_creators": [member]}
+    expected = {key: member[key] for key in ("uid", "sec_uid", "nickname", "role_title")} | {"invite_status": 1}
+    record = normalize_aweme(aweme)
+    assert record["aweme_id"] == "7619622418637720878"
+    assert record["co_creators"] == extract_co_creators(aweme) == [expected]
+    assert record["author"] == aweme["author"]
+    assert record["author"]["sec_uid"] != record["co_creators"][0]["sec_uid"]
+    assert member["invite_status"] == status and "extra" in member
+
+
+@pytest.mark.parametrize("info", [
+    None, {}, [], "invalid", False, 1,
+    {"co_creators": None}, {"co_creators": {}}, {"co_creators": "invalid"},
+    {"co_creators": [None, [], "invalid", 1, True, {}]},
+])
+def test_missing_or_malformed_cooperation_info_is_empty(info):
+    aweme = sample_aweme()
+    aweme["cooperation_info"] = info
+    assert extract_co_creators(aweme) == []
+    assert normalize_aweme(aweme)["co_creators"] == []
+
+
+def test_ordinary_video_without_cooperation_field_has_no_co_creators():
+    aweme = sample_aweme()
+    assert "cooperation_info" not in aweme
+    assert extract_co_creators(aweme) == []
+    assert normalize_aweme(aweme)["co_creators"] == []
+
+
+def test_unrelated_co_creator_flags_do_not_establish_membership():
+    aweme = sample_aweme()
+    aweme["co_creators"] = [{"sec_uid": "MS4wLjMember", "invite_status": 1}]
+    aweme["cooperation_info"] = {"co_creator_nums": 1, "accepted_nums": 1, "extra": '{"is_cooperation": 1}'}
+    assert extract_co_creators(aweme) == []
+    assert normalize_aweme(aweme)["co_creators"] == []
+
+
+@pytest.mark.parametrize("status", [None, True, False, 0, 2, -1, 1.0, 1.5, "0", "2", "01", "1.0", " 1 ", "", [], {}])
+def test_co_creator_invitation_requires_exact_accepted_status(status):
+    aweme = sample_aweme()
+    aweme["cooperation_info"] = {"co_creators": [{"sec_uid": "MS4wLjMember", "invite_status": status}]}
+    assert extract_co_creators(aweme) == []
+    assert normalize_aweme(aweme)["co_creators"] == []
+
+
+def test_missing_co_creator_invitation_is_not_accepted():
+    aweme = sample_aweme()
+    aweme["cooperation_info"] = {"co_creators": [{"sec_uid": "MS4wLjMember"}]}
+    assert extract_co_creators(aweme) == []
+
+
+@pytest.mark.parametrize("sec_uid", [None, "", "  ", 123, True, False, [], {}])
+def test_co_creator_identity_requires_a_nonempty_string(sec_uid):
+    aweme = sample_aweme()
+    aweme["cooperation_info"] = {"co_creators": [{"sec_uid": sec_uid, "invite_status": 1}]}
+    assert extract_co_creators(aweme) == []
+
+
+def test_co_creators_deduplicate_by_identity_after_filtering():
+    aweme = sample_aweme()
+    aweme["cooperation_info"] = {"co_creators": [
+        {"sec_uid": "MS4wLjFirst", "invite_status": 0},
+        {"sec_uid": "MS4wLjFirst", "invite_status": "1", "nickname": "同名用户"},
+        {"sec_uid": "MS4wLjFirst", "invite_status": 1, "nickname": "重复用户"},
+        {"sec_uid": "MS4wLjSecond", "invite_status": 1, "nickname": "同名用户"},
+    ]}
+    expected = [
+        {"uid": "", "sec_uid": "MS4wLjFirst", "nickname": "同名用户", "role_title": "", "invite_status": 1},
+        {"uid": "", "sec_uid": "MS4wLjSecond", "nickname": "同名用户", "role_title": "", "invite_status": 1},
+    ]
+    assert extract_co_creators(aweme) == expected
+    assert normalize_aweme(aweme)["co_creators"] == expected

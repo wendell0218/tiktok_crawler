@@ -6,7 +6,7 @@ from urllib.parse import parse_qs, quote, urlparse
 from playwright.async_api import Error as PlaywrightError
 
 from .browser import BrowserRisk, _challenge, _login_panel, _scroll_search
-from .normalize import PayloadError, normalize_aweme
+from .normalize import PayloadError, extract_co_creators, normalize_aweme
 
 
 USER_SEARCH_PATH = "/aweme/v1/web/discover/search/"
@@ -326,8 +326,10 @@ async def user_posts(user, session, count=0, page_delay=5, max_pages=10000, head
                 if aweme_id in seen:
                     continue
                 author = aweme.get("author") or {}
-                if not isinstance(author, dict) or author.get("sec_uid") != sec_uid:
-                    raise BrowserRisk("user_mismatch", "用户作品响应中的作者与目标用户不一致，已停止采集。")
+                is_author = isinstance(author, dict) and author.get("sec_uid") == sec_uid
+                is_co_creator = any(member["sec_uid"] == sec_uid for member in extract_co_creators(aweme))
+                if not is_author and not is_co_creator:
+                    raise BrowserRisk("user_mismatch", f"视频 {aweme_id} 的主作者和已确认共创者均不包含目标用户，已停止采集。")
                 seen.add(aweme_id)
                 if aweme.get("images") or aweme.get("aweme_type") in (68, 150):
                     skipped.append({"aweme_id": aweme_id, "reason": "image_post"})

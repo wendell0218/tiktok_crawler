@@ -184,6 +184,27 @@ def extract_awemes(payload):
     }
 
 
+def extract_co_creators(aweme):
+    cooperation = _mapping(_mapping(aweme).get("cooperation_info"))
+    output, seen = [], set()
+    for item in _list(cooperation.get("co_creators")):
+        item = _mapping(item)
+        sec_uid, status = item.get("sec_uid"), item.get("invite_status")
+        if not isinstance(sec_uid, str) or not sec_uid.strip():
+            continue
+        if type(status) not in (int, str) or status not in (1, "1") or sec_uid in seen:
+            continue
+        seen.add(sec_uid)
+        output.append({
+            "uid": _text(item.get("uid")),
+            "sec_uid": sec_uid,
+            "nickname": _text(item.get("nickname")),
+            "role_title": _text(item.get("role_title")),
+            "invite_status": 1,
+        })
+    return output
+
+
 def normalize_aweme(aweme, keyword="", user_agent=""):
     aweme = _mapping(aweme)
     aweme_id = _text(aweme.get("aweme_id"))
@@ -211,6 +232,7 @@ def normalize_aweme(aweme, keyword="", user_agent=""):
             "sec_uid": _text(author.get("sec_uid")),
             "nickname": _text(author.get("nickname")),
         },
+        "co_creators": extract_co_creators(aweme),
         "statistics": statistics,
         "collection": collection,
         "duration_ms": _integer(video.get("duration")),

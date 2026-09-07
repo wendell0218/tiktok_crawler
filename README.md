@@ -51,6 +51,34 @@ source ./crawl_user.sh
 
 首次登录或遇到验证码时，在弹出的浏览器中手动完成后继续。已有视频文件会跳过。
 
+## 元数据
+
+关键词模式保存在 `data/metadata.jsonl`；用户模式保存在 `<OUTPUT_DIR>/<sec_uid>/runs/<时间>/metadata.jsonl`。每行是一个视频的 JSON 对象，下面是一条真实记录的精简摘录：
+
+```json
+{
+  "aweme_id": "7679614455285615922",
+  "title": "去了一趟西班牙2.0（荒岛四兄弟篇）#西班牙 #巴塞罗那 #vlog #影石lunapro #4K竖拍口袋机",
+  "author": {"uid": "105525949232", "nickname": "影视飓风"},
+  "co_creators": [
+    {"uid": "103683062170", "nickname": "Linksphotograph", "role_title": "出镜", "invite_status": 1},
+    {"uid": "74561321801", "nickname": "中国BOY-Hans", "role_title": "出镜", "invite_status": 1}
+  ],
+  "collection": {"id": "7620377442435205166", "title": "去了一趟…"},
+  "duration_ms": 1473343,
+  "width": 2560,
+  "height": 1440,
+  "statistics": {"digg_count": 292404, "comment_count": 4107, "share_count": 28624, "collect_count": 19501},
+  "share_url": "https://www.douyin.com/video/7679614455285615922",
+  "source_keyword": "",
+  "source_user": "MS4wLjABAAAAaCcBHb3Rhc4zxF8YkBOfHfLh6k-IWEK2l3Ne9xOXPnQ"
+}
+```
+
+`author` 是主发布者；`co_creators` 是已确认共创者，没有时为 `[]`。`collection` 保存合集 ID 和名称，`null` 表示未获取到，不代表一定没有合集。`duration_ms` 的单位是毫秒，`statistics` 中的上述字段依次为点赞、评论、分享和收藏数。
+
+`source_keyword` 记录来源关键词，用户模式另有 `source_user` 记录目标账号的 `sec_uid`。完整记录还包含作者及共创者的 `sec_uid`、播放链接、清晰度版本和采集时间等字段。
+
 ## 风控参考
 
 2026-09-07 本机关键词测试（每词 `COUNT=200`、翻页间隔 5 秒、换词间隔 60 秒）中，首次出现安全验证前的累计成功下载量：
