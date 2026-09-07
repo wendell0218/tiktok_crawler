@@ -4,6 +4,7 @@ import re
 import time
 from pathlib import Path
 from urllib.parse import urlparse
+from uuid import uuid4
 
 import httpx
 
@@ -48,7 +49,7 @@ async def _request(client, record, variant, output_dir, probe_bytes, max_bytes, 
     output_dir = Path(output_dir).expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     output = output_dir / _filename(record, variant)
-    temporary = output.with_suffix(output.suffix + ".part")
+    temporary = output.with_name(f"{output.name}.{uuid4().hex}.part")
     if output.exists() and probe_bytes == 0 and not delete_after:
         return {
             "aweme_id": record["aweme_id"],
@@ -70,7 +71,7 @@ async def _request(client, record, variant, output_dir, probe_bytes, max_bytes, 
     last_error = None
     for url in variant.get("urls") or []:
         if not _safe_url(url):
-            last_error = DownloadError("unsafe_url", "media URL is not allowed")
+            last_error = DownloadError("unsafe_url", "媒体链接不符合安全要求")
             continue
         started = time.monotonic()
         try:
@@ -96,7 +97,7 @@ async def _request(client, record, variant, output_dir, probe_bytes, max_bytes, 
                         if file:
                             file.write(chunk)
                         if max_bytes > 0 and total > max_bytes:
-                            raise DownloadError("size_limit", "download exceeds max bytes")
+                            raise DownloadError("size_limit", "下载大小超过设定上限")
                         if probe_bytes > 0 and total >= probe_bytes:
                             break
                 finally:
@@ -104,7 +105,7 @@ async def _request(client, record, variant, output_dir, probe_bytes, max_bytes, 
                         file.close()
                 valid_media = content_type.startswith("video/") or b"ftyp" in bytes(first[:64])
                 if not valid_media:
-                    raise DownloadError("invalid_media", f"unexpected content type {content_type}")
+                    raise DownloadError("invalid_media", f"响应内容不是有效视频，类型为 {content_type}")
                 elapsed = time.monotonic() - started
                 if probe_bytes == 0:
                     if delete_after:
@@ -135,9 +136,12 @@ async def _request(client, record, variant, output_dir, probe_bytes, max_bytes, 
         except (httpx.HTTPError, OSError) as exc:
             temporary.unlink(missing_ok=True)
             last_error = DownloadError("transport_error", exc.__class__.__name__)
+        except asyncio.CancelledError:
+            temporary.unlink(missing_ok=True)
+            raise
     if last_error:
         raise last_error
-    raise DownloadError("missing_url", "variant has no usable URL")
+    raise DownloadError("missing_url", "该视频版本没有可用的下载链接")
 
 
 async def download_many(
@@ -151,12 +155,27 @@ async def download_many(
     probe_bytes=0,
     max_bytes=0,
     delete_after=False,
+    workers=1,
+    on_result=None,
 ):
     if 0 < probe_bytes < 64:
-        raise ValueError("probe_bytes must be at least 64")
+        raise ValueError("probe_bytes 必须至少为 64 字节")
+    if not isinstance(workers, int) or workers < 1:
+        raise ValueError("workers 必须为正整数")
+    unique_records = []
+    seen_ids = set()
+    for record in records:
+        aweme_id = str(record.get("aweme_id", ""))
+        if aweme_id not in seen_ids:
+            seen_ids.add(aweme_id)
+            unique_records.append(record)
+    if not unique_records:
+        return []
     timeout_config = httpx.Timeout(timeout, connect=min(20, timeout))
-    limits = httpx.Limits(max_connections=1, max_keepalive_connections=1)
-    results = []
+    limits = httpx.Limits(max_connections=workers, max_keepalive_connections=workers)
+    results = [None] * len(unique_records)
+    next_index = 0
+    stopped = False
 
     async def remove_cookie(request):
         request.headers.pop("cookie", None)
@@ -168,29 +187,40 @@ async def download_many(
         limits=limits,
         event_hooks={"request": [remove_cookie]},
     ) as client:
-        for index, record in enumerate(records):
-            try:
-                variant = select_variant(record, quality=quality, codec=codec, fallback=fallback)
-                result = await _request(
-                    client,
-                    record,
-                    variant,
-                    output_dir,
-                    probe_bytes,
-                    max_bytes,
-                    delete_after,
-                )
-            except (DownloadError, LookupError, ValueError) as exc:
-                result = {
-                    "aweme_id": record.get("aweme_id", ""),
-                    "status": "failed",
-                    "category": getattr(exc, "category", "selection_error"),
-                    "http_status": getattr(exc, "status", 0),
-                    "detail": str(exc),
-                }
-            results.append(result)
-            if result.get("http_status") == 429:
-                break
-            if delay > 0 and index + 1 < len(records):
-                await asyncio.sleep(delay)
-    return results
+        async def worker():
+            nonlocal next_index, stopped
+            while not stopped and next_index < len(unique_records):
+                index = next_index
+                next_index += 1
+                record = unique_records[index]
+                try:
+                    variant = select_variant(record, quality=quality, codec=codec, fallback=fallback)
+                    result = await _request(
+                        client,
+                        record,
+                        variant,
+                        output_dir,
+                        probe_bytes,
+                        max_bytes,
+                        delete_after,
+                    )
+                except (DownloadError, LookupError, ValueError) as exc:
+                    result = {
+                        "aweme_id": record.get("aweme_id", ""),
+                        "status": "failed",
+                        "category": getattr(exc, "category", "selection_error"),
+                        "http_status": getattr(exc, "status", 0),
+                        "detail": str(exc),
+                    }
+                results[index] = result
+                if result.get("http_status") == 429:
+                    stopped = True
+                if on_result is not None:
+                    on_result(result)
+                if delay > 0 and not stopped and next_index < len(unique_records):
+                    await asyncio.sleep(delay)
+
+        async with asyncio.TaskGroup() as tasks:
+            for _ in range(min(workers, len(unique_records))):
+                tasks.create_task(worker())
+    return [result for result in results if result is not None]

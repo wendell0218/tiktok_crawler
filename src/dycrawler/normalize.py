@@ -155,13 +155,13 @@ def extract_variants(video):
 
 def extract_awemes(payload):
     if not isinstance(payload, dict):
-        raise PayloadError("response is not an object")
+        raise PayloadError("响应不是有效对象")
     status_code = payload.get("status_code", 0)
     if status_code not in (0, "0", None):
-        raise PayloadError(f"business status {status_code}")
+        raise PayloadError(f"接口业务状态异常：{status_code}")
     rows = payload.get("data", [])
     if not isinstance(rows, list):
-        raise PayloadError("response data is not a list")
+        raise PayloadError("响应中的 data 不是列表")
     awemes = []
     for row in rows:
         row = _mapping(row)
@@ -188,13 +188,19 @@ def normalize_aweme(aweme, keyword="", user_agent=""):
     aweme = _mapping(aweme)
     aweme_id = _text(aweme.get("aweme_id"))
     if not aweme_id:
-        raise PayloadError("missing aweme_id")
+        raise PayloadError("缺少视频标识 aweme_id")
     video = _mapping(aweme.get("video"))
     variants = extract_variants(video)
     author = _mapping(aweme.get("author"))
     statistics = _mapping(aweme.get("statistics"))
     cover = _mapping(video.get("origin_cover") or video.get("cover"))
     cover_urls = _https_urls(cover.get("url_list"))
+    mix_info = _mapping(aweme.get("mix_info"))
+    mix_id = mix_info.get("mix_id")
+    mix_id = _text(mix_id) if isinstance(mix_id, (str, int)) and not isinstance(mix_id, bool) else ""
+    collection = None
+    if mix_id and mix_id != "$undefined":
+        collection = {"id": mix_id, "title": _text(mix_info.get("mix_name"))}
     return {
         "aweme_id": aweme_id,
         "aweme_type": _integer(aweme.get("aweme_type")),
@@ -206,6 +212,7 @@ def normalize_aweme(aweme, keyword="", user_agent=""):
             "nickname": _text(author.get("nickname")),
         },
         "statistics": statistics,
+        "collection": collection,
         "duration_ms": _integer(video.get("duration")),
         "width": _integer(video.get("width")),
         "height": _integer(video.get("height")),
@@ -224,7 +231,7 @@ def select_variant(record, quality="best", codec="any", fallback="error"):
     if codec != "any":
         variants = [item for item in variants if item.get("codec") == codec]
     if not variants:
-        raise LookupError("no matching video variant")
+        raise LookupError("没有符合条件的视频版本")
     if quality == "best":
         return variants[0]
     if quality == "worst":
@@ -237,4 +244,4 @@ def select_variant(record, quality="best", codec="any", fallback="error"):
         lower = [item for item in variants if item.get("quality") and item["quality"] < target]
         if lower:
             return lower[0]
-    raise LookupError(f"quality {target}p is unavailable")
+    raise LookupError(f"没有 {target}p 分辨率的视频版本")

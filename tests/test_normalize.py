@@ -84,3 +84,42 @@ def test_variant_selection():
     assert select_variant(record, quality="900", fallback="lower")["quality"] == 720
     with pytest.raises(LookupError):
         select_variant(record, quality="480")
+
+
+def test_normalize_collection_membership():
+    aweme = sample_aweme()
+    aweme["mix_info"] = {
+        "mix_id": 7420000000000000002,
+        "mix_name": "  摄影教程  ",
+        "extra": "not exported",
+    }
+    record = normalize_aweme(aweme)
+    assert record["collection"] == {"id": "7420000000000000002", "title": "摄影教程"}
+    assert aweme["mix_info"]["mix_id"] == 7420000000000000002
+
+
+@pytest.mark.parametrize("mix_info", [None, {}, [], "invalid", {"mix_name": "Only a title"}])
+def test_collection_without_membership_id_is_unknown(mix_info):
+    aweme = sample_aweme()
+    aweme["mix_info"] = mix_info
+    assert normalize_aweme(aweme)["collection"] is None
+
+
+@pytest.mark.parametrize("mix_id", [None, "", "  ", "$undefined", False, True, {}, []])
+def test_invalid_collection_id_is_unknown(mix_id):
+    aweme = sample_aweme()
+    aweme["mix_info"] = {"mix_id": mix_id, "mix_name": "Example"}
+    assert normalize_aweme(aweme)["collection"] is None
+
+
+def test_collection_title_is_optional():
+    aweme = sample_aweme()
+    aweme["mix_info"] = {"mix_id": "7420000000000000002"}
+    assert normalize_aweme(aweme)["collection"] == {"id": "7420000000000000002", "title": ""}
+
+
+def test_series_is_not_reported_as_collection():
+    aweme = sample_aweme()
+    assert normalize_aweme(aweme)["collection"] is None
+    aweme["series_info"] = {"series_id": "123", "series_name": "A paid series"}
+    assert normalize_aweme(aweme)["collection"] is None
